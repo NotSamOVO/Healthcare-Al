@@ -59,7 +59,7 @@ def _render_handoff(summary: str) -> None:
             {"section": "Major risks", "detail": sections.get("Major risks", "")},
         ]
     )
-    st.dataframe(snapshot, use_container_width=True, hide_index=True)
+    st.dataframe(snapshot, width="stretch", hide_index=True)
 
     st.markdown("#### Structured Handoff")
     left, right = st.columns(2)
@@ -121,13 +121,6 @@ st.caption(
 )
 
 with st.sidebar:
-    st.markdown("### Demo Flow")
-    st.markdown(
-        "1. Select an admission.  \n"
-        "2. Review urgency and follow-up guidance.  \n"
-        "3. Inspect evidence and abnormal labs.  \n"
-        "4. Compare with similar admissions."
-    )
     st.markdown("### RAG Mode")
     rag_mode = st.radio(
         "Grounded answer mode",
@@ -159,15 +152,15 @@ with overview_left:
     st.subheader("Case Overview")
     overview = pd.DataFrame(
         [
-            {"field": "case_id", "value": case.get("case_id")},
-            {"field": "subject_id", "value": case.get("subject_id")},
-            {"field": "hadm_id", "value": case.get("hadm_id")},
-            {"field": "age", "value": case.get("age")},
-            {"field": "gender", "value": case.get("gender")},
-            {"field": "admission_diagnosis", "value": case.get("admission_diagnosis")},
+            {"field": "case_id", "value": str(case.get("case_id", ""))},
+            {"field": "subject_id", "value": str(case.get("subject_id", ""))},
+            {"field": "hadm_id", "value": str(case.get("hadm_id", ""))},
+            {"field": "age", "value": str(case.get("age", ""))},
+            {"field": "gender", "value": str(case.get("gender", ""))},
+            {"field": "admission_diagnosis", "value": str(case.get("admission_diagnosis", ""))},
         ]
     )
-    st.dataframe(overview, use_container_width=True, hide_index=True)
+    st.dataframe(overview, width="stretch", hide_index=True)
 
     st.subheader("Clinician Handoff")
     _render_handoff(summary)
@@ -193,7 +186,7 @@ with overview_right:
         ]
         st.dataframe(
             context.abnormal_labs[lab_columns].head(20),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -203,13 +196,13 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
 )
 
 with tab1:
-    st.dataframe(context.diagnoses, use_container_width=True, hide_index=True)
+    st.dataframe(context.diagnoses, width="stretch", hide_index=True)
 
 with tab2:
-    st.dataframe(context.prescriptions, use_container_width=True, hide_index=True)
+    st.dataframe(context.prescriptions, width="stretch", hide_index=True)
 
 with tab3:
-    st.dataframe(context.labs, use_container_width=True, hide_index=True)
+    st.dataframe(context.labs, width="stretch", hide_index=True)
 
 with tab4:
     st.text(str(case.get("discharge_summary", "")))

@@ -127,10 +127,7 @@ def score_case(context: CaseContext) -> TriageResult:
     score += min(medication_risk_score, 1)
 
     diagnosis_count = len(context.diagnoses.index)
-    if diagnosis_count >= 8:
-        score += 1
-        evidence.append(f"Case complexity: {diagnosis_count} diagnosis codes")
-    elif diagnosis_count >= 4:
+    if diagnosis_count >= 4:
         score += 1
         evidence.append(f"Case complexity: {diagnosis_count} diagnosis codes")
 
