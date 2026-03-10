@@ -27,7 +27,7 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
         issues.append({
             "priority": "High",
             "category": "Missing data",
-            "detail": "No discharge summary — triage relies on structured data only.",
+            "detail": "No discharge summary found. The triage can only use diagnoses, labs, and prescriptions for this case.",
         })
 
     admission_dx = str(context.case_row.get("admission_diagnosis", "")).strip()
@@ -35,28 +35,28 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
         issues.append({
             "priority": "High",
             "category": "Missing data",
-            "detail": "Admission diagnosis field is empty.",
+            "detail": "No admission diagnosis recorded for this case.",
         })
 
     if context.diagnoses.empty:
         issues.append({
             "priority": "High",
             "category": "Missing data",
-            "detail": "No diagnosis codes linked to this admission.",
+            "detail": "No diagnosis codes found. The system cannot assess clinical conditions for this case.",
         })
 
     if context.labs.empty:
         issues.append({
             "priority": "Moderate",
             "category": "Missing data",
-            "detail": "No lab results linked to this admission.",
+            "detail": "No lab results found. Abnormal lab detection is unavailable for this case.",
         })
 
     if context.prescriptions.empty:
         issues.append({
             "priority": "Low",
             "category": "Missing data",
-            "detail": "No prescriptions linked to this admission.",
+            "detail": "No prescriptions found. Medication risk scoring will be skipped for this case.",
         })
 
     # --- Inconsistency checks ---
@@ -69,7 +69,7 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
             issues.append({
                 "priority": "High",
                 "category": "Inconsistency",
-                "detail": f"Prescription end date before start date for: {drugs}.",
+                "detail": f"Medication dates out of order (end before start) for: {drugs}.",
             })
 
     # Labs with missing numeric values
@@ -82,7 +82,7 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
             issues.append({
                 "priority": severity,
                 "category": "Inconsistency",
-                "detail": f"{unparsed}/{total_labs} lab values ({pct}%) could not be parsed to numeric.",
+                "detail": f"{unparsed} of {total_labs} lab results ({pct}%) are text-only (e.g. 'GREATER THAN 150') and cannot be checked for abnormality.",
             })
 
     # Labs with missing timestamps
@@ -92,7 +92,7 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
             issues.append({
                 "priority": "Moderate",
                 "category": "Inconsistency",
-                "detail": f"{missing_time} lab result(s) have no chart timestamp.",
+                "detail": f"{missing_time} lab result(s) are missing a recorded date/time.",
             })
 
     # Diagnoses missing descriptions
@@ -104,7 +104,7 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
             issues.append({
                 "priority": "Low",
                 "category": "Inconsistency",
-                "detail": f"{missing_titles} diagnosis code(s) have no description — unmapped ICD9.",
+                "detail": f"{missing_titles} diagnosis code(s) have no readable name. These ICD9 codes were not found in the dictionary.",
             })
 
     # Prescriptions missing dose info
@@ -114,7 +114,7 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
             issues.append({
                 "priority": "Low",
                 "category": "Inconsistency",
-                "detail": f"{missing_dose} prescription(s) have no dose value recorded.",
+                "detail": f"{missing_dose} prescription(s) are missing dosage information.",
             })
 
     # Age sanity check
@@ -125,7 +125,7 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
             issues.append({
                 "priority": "High",
                 "category": "Inconsistency",
-                "detail": f"Patient age ({age_val}) is outside plausible range (0–120).",
+                "detail": f"Patient age is recorded as {age_val}, which is outside the expected range of 0–120.",
             })
 
     # Sort by priority
