@@ -5,7 +5,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from healthcare_ai.data import available_hadm_ids, load_dataset
-from healthcare_ai.features import build_case_context
+from healthcare_ai.features import CaseContext, build_case_context
 from healthcare_ai.rag import answer_grounded_question, build_case_rag_index, llm_rag_available
 from healthcare_ai.retrieval import build_retrieval_index, find_similar_cases
 from healthcare_ai.summarizer import build_case_summary
@@ -14,6 +14,23 @@ from healthcare_ai.triage import score_case
 load_dotenv()
 
 st.set_page_config(page_title="Clinical Workflow Triage Assistant", layout="wide")
+
+
+def _check_data_completeness(context: CaseContext) -> list[str]:
+    gaps = []
+    note = str(context.case_row.get("discharge_summary", "")).strip()
+    if not note or note == "nan":
+        gaps.append("No discharge summary available — triage relies on structured data only.")
+    if context.diagnoses.empty:
+        gaps.append("No diagnosis codes linked to this admission.")
+    if context.prescriptions.empty:
+        gaps.append("No prescriptions linked to this admission.")
+    if context.labs.empty:
+        gaps.append("No lab results linked to this admission.")
+    admission_dx = str(context.case_row.get("admission_diagnosis", "")).strip()
+    if not admission_dx or admission_dx == "nan":
+        gaps.append("Admission diagnosis field is empty.")
+    return gaps
 
 
 def _parse_handoff_summary(summary: str) -> tuple[str, dict[str, str]]:
@@ -145,6 +162,12 @@ col1, col2, col3 = st.columns(3)
 col1.metric("Urgency", triage.urgency)
 col2.metric("Triage Score", triage.score)
 col3.metric("Abnormal Lab Signals", len(context.abnormal_labs))
+
+data_gaps = _check_data_completeness(context)
+if data_gaps:
+    with st.expander(f"Data completeness: {len(data_gaps)} gap(s) detected", expanded=False):
+        for gap in data_gaps:
+            st.warning(gap)
 
 overview_left, overview_right = st.columns([1.1, 1.2])
 
