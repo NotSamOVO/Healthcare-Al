@@ -65,11 +65,11 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
         rx = context.prescriptions.dropna(subset=["startdate", "enddate"])
         bad_rx = rx.loc[rx["enddate"] < rx["startdate"]]
         if not bad_rx.empty:
-            drugs = ", ".join(bad_rx["drug"].head(3).tolist())
             issues.append({
                 "priority": "High",
                 "category": "Inconsistency",
-                "detail": f"Medication dates out of order (end before start) for: {drugs}.",
+                "detail": f"{len(bad_rx)} medication(s) have end date before start date.",
+                "items": bad_rx[["drug", "startdate", "enddate"]].reset_index(drop=True),
             })
 
     # Labs with missing numeric values
@@ -80,12 +80,11 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
         if unparsed > 0:
             pct = round(100 * unparsed / total_labs)
             severity = "Moderate" if pct < 50 else "High"
-            names = sorted(text_only["lab_name"].dropna().unique())[:6]
-            names_str = ", ".join(names) + (" ..." if len(text_only["lab_name"].dropna().unique()) > 6 else "")
             issues.append({
                 "priority": severity,
                 "category": "Inconsistency",
-                "detail": f"{unparsed} of {total_labs} lab results ({pct}%) are text-only and cannot be checked for abnormality: {names_str}",
+                "detail": f"{unparsed} of {total_labs} lab results ({pct}%) are text-only and cannot be checked for abnormality.",
+                "items": text_only[["lab_name", "value", "unit", "charttime"]].reset_index(drop=True),
             })
 
     # Labs with missing timestamps
@@ -93,12 +92,11 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
         no_time = context.labs[context.labs["charttime"].isna()]
         missing_time = len(no_time)
         if missing_time > 0:
-            names = sorted(no_time["lab_name"].dropna().unique())[:6]
-            names_str = ", ".join(names) + (" ..." if len(no_time["lab_name"].dropna().unique()) > 6 else "")
             issues.append({
                 "priority": "Moderate",
                 "category": "Inconsistency",
-                "detail": f"{missing_time} lab result(s) are missing a recorded date/time: {names_str}",
+                "detail": f"{missing_time} lab result(s) are missing a recorded date/time.",
+                "items": no_time[["lab_name", "value", "unit"]].reset_index(drop=True),
             })
 
     # Diagnoses missing descriptions
@@ -108,12 +106,11 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
         ]
         missing_titles = len(no_title)
         if missing_titles > 0:
-            codes = no_title["icd9_code"].dropna().head(6).tolist()
-            codes_str = ", ".join(str(c) for c in codes) + (" ..." if missing_titles > 6 else "")
             issues.append({
                 "priority": "Low",
                 "category": "Inconsistency",
-                "detail": f"{missing_titles} diagnosis code(s) have no readable name: {codes_str}",
+                "detail": f"{missing_titles} diagnosis code(s) have no readable name in the dictionary.",
+                "items": no_title[["icd9_code", "seq_num"]].reset_index(drop=True),
             })
 
     # Prescriptions missing dose info
@@ -121,12 +118,11 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
         no_dose = context.prescriptions[context.prescriptions["dose_value"].isna()]
         missing_dose = len(no_dose)
         if missing_dose > 0:
-            drugs = sorted(no_dose["drug"].dropna().unique())[:6]
-            drugs_str = ", ".join(drugs) + (" ..." if len(no_dose["drug"].dropna().unique()) > 6 else "")
             issues.append({
                 "priority": "Low",
                 "category": "Inconsistency",
-                "detail": f"{missing_dose} prescription(s) are missing dosage information: {drugs_str}",
+                "detail": f"{missing_dose} prescription(s) are missing dosage information.",
+                "items": no_dose[["drug", "route", "startdate", "enddate"]].reset_index(drop=True),
             })
 
     # Age sanity check
@@ -161,19 +157,24 @@ def _render_data_quality(issues: list[dict[str, str]]) -> None:
         label_parts.append(f"{low} low")
     label = f"Data quality: {', '.join(label_parts)} issue(s) flagged"
     with st.expander(label, expanded=high > 0):
-        summary_df = pd.DataFrame(issues, columns=["priority", "category", "detail"])
+        summary_df = pd.DataFrame(
+            [{"priority": i["priority"], "category": i["category"], "detail": i["detail"]} for i in issues]
+        )
         summary_df.index = range(1, len(summary_df) + 1)
         summary_df.index.name = "#"
         st.dataframe(summary_df, width="stretch")
         st.divider()
-        for _, row in summary_df.iterrows():
-            icon = {"High": "\u2757", "Moderate": "\u26a0\ufe0f", "Low": "\u2139\ufe0f"}.get(row["priority"], "")
-            if row["priority"] == "High":
-                st.error(f"{icon} **{row['priority']}** — {row['category']}: {row['detail']}")
-            elif row["priority"] == "Moderate":
-                st.warning(f"{icon} **{row['priority']}** — {row['category']}: {row['detail']}")
+        for idx, issue in enumerate(issues):
+            icon = {"High": "\u2757", "Moderate": "\u26a0\ufe0f", "Low": "\u2139\ufe0f"}.get(issue["priority"], "")
+            msg = f"{icon} **{issue['priority']}** — {issue['category']}: {issue['detail']}"
+            if issue["priority"] == "High":
+                st.error(msg)
+            elif issue["priority"] == "Moderate":
+                st.warning(msg)
             else:
-                st.info(f"{icon} **{row['priority']}** — {row['category']}: {row['detail']}")
+                st.info(msg)
+            if "items" in issue and isinstance(issue["items"], pd.DataFrame) and not issue["items"].empty:
+                st.dataframe(issue["items"], width="stretch", hide_index=True)
 
 
 def _parse_handoff_summary(summary: str) -> tuple[str, dict[str, str]]:
