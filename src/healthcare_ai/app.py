@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
@@ -16,21 +17,147 @@ load_dotenv()
 st.set_page_config(page_title="Clinical Workflow Triage Assistant", layout="wide")
 
 
-def _check_data_completeness(context: CaseContext) -> list[str]:
-    gaps = []
+def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
+    """Return a list of {'priority': ..., 'category': ..., 'detail': ...} dicts."""
+    issues: list[dict[str, str]] = []
+
+    # --- Missing data checks ---
     note = str(context.case_row.get("discharge_summary", "")).strip()
     if not note or note == "nan":
-        gaps.append("No discharge summary available — triage relies on structured data only.")
-    if context.diagnoses.empty:
-        gaps.append("No diagnosis codes linked to this admission.")
-    if context.prescriptions.empty:
-        gaps.append("No prescriptions linked to this admission.")
-    if context.labs.empty:
-        gaps.append("No lab results linked to this admission.")
+        issues.append({
+            "priority": "High",
+            "category": "Missing data",
+            "detail": "No discharge summary — triage relies on structured data only.",
+        })
+
     admission_dx = str(context.case_row.get("admission_diagnosis", "")).strip()
     if not admission_dx or admission_dx == "nan":
-        gaps.append("Admission diagnosis field is empty.")
-    return gaps
+        issues.append({
+            "priority": "High",
+            "category": "Missing data",
+            "detail": "Admission diagnosis field is empty.",
+        })
+
+    if context.diagnoses.empty:
+        issues.append({
+            "priority": "High",
+            "category": "Missing data",
+            "detail": "No diagnosis codes linked to this admission.",
+        })
+
+    if context.labs.empty:
+        issues.append({
+            "priority": "Moderate",
+            "category": "Missing data",
+            "detail": "No lab results linked to this admission.",
+        })
+
+    if context.prescriptions.empty:
+        issues.append({
+            "priority": "Low",
+            "category": "Missing data",
+            "detail": "No prescriptions linked to this admission.",
+        })
+
+    # --- Inconsistency checks ---
+    # Prescription date order
+    if not context.prescriptions.empty:
+        rx = context.prescriptions.dropna(subset=["startdate", "enddate"])
+        bad_rx = rx.loc[rx["enddate"] < rx["startdate"]]
+        if not bad_rx.empty:
+            drugs = ", ".join(bad_rx["drug"].head(3).tolist())
+            issues.append({
+                "priority": "High",
+                "category": "Inconsistency",
+                "detail": f"Prescription end date before start date for: {drugs}.",
+            })
+
+    # Labs with missing numeric values
+    if not context.labs.empty:
+        total_labs = len(context.labs)
+        unparsed = int(context.labs["numeric_value"].isna().sum())
+        if unparsed > 0:
+            pct = round(100 * unparsed / total_labs)
+            severity = "Moderate" if pct < 50 else "High"
+            issues.append({
+                "priority": severity,
+                "category": "Inconsistency",
+                "detail": f"{unparsed}/{total_labs} lab values ({pct}%) could not be parsed to numeric.",
+            })
+
+    # Labs with missing timestamps
+    if not context.labs.empty:
+        missing_time = int(context.labs["charttime"].isna().sum())
+        if missing_time > 0:
+            issues.append({
+                "priority": "Moderate",
+                "category": "Inconsistency",
+                "detail": f"{missing_time} lab result(s) have no chart timestamp.",
+            })
+
+    # Diagnoses missing descriptions
+    if not context.diagnoses.empty:
+        missing_titles = int(
+            context.diagnoses["long_title"].fillna(context.diagnoses["short_title"]).isna().sum()
+        )
+        if missing_titles > 0:
+            issues.append({
+                "priority": "Low",
+                "category": "Inconsistency",
+                "detail": f"{missing_titles} diagnosis code(s) have no description — unmapped ICD9.",
+            })
+
+    # Prescriptions missing dose info
+    if not context.prescriptions.empty:
+        missing_dose = int(context.prescriptions["dose_value"].isna().sum())
+        if missing_dose > 0:
+            issues.append({
+                "priority": "Low",
+                "category": "Inconsistency",
+                "detail": f"{missing_dose} prescription(s) have no dose value recorded.",
+            })
+
+    # Age sanity check
+    age = context.case_row.get("age")
+    if pd.notna(age):
+        age_val = int(age)
+        if age_val < 0 or age_val > 120:
+            issues.append({
+                "priority": "High",
+                "category": "Inconsistency",
+                "detail": f"Patient age ({age_val}) is outside plausible range (0–120).",
+            })
+
+    # Sort by priority
+    priority_order = {"High": 0, "Moderate": 1, "Low": 2}
+    issues.sort(key=lambda x: priority_order.get(x["priority"], 9))
+    return issues
+
+
+def _render_data_quality(issues: list[dict[str, str]]) -> None:
+    if not issues:
+        return
+    high = sum(1 for i in issues if i["priority"] == "High")
+    moderate = sum(1 for i in issues if i["priority"] == "Moderate")
+    low = sum(1 for i in issues if i["priority"] == "Low")
+    label_parts = []
+    if high:
+        label_parts.append(f"{high} high")
+    if moderate:
+        label_parts.append(f"{moderate} moderate")
+    if low:
+        label_parts.append(f"{low} low")
+    label = f"Data quality: {', '.join(label_parts)} issue(s) flagged"
+    with st.expander(label, expanded=high > 0):
+        df = pd.DataFrame(issues, columns=["priority", "category", "detail"])
+        for _, row in df.iterrows():
+            icon = {"High": "\u2757", "Moderate": "\u26a0\ufe0f", "Low": "\u2139\ufe0f"}.get(row["priority"], "")
+            if row["priority"] == "High":
+                st.error(f"{icon} **{row['priority']}** \u2014 {row['category']}: {row['detail']}")
+            elif row["priority"] == "Moderate":
+                st.warning(f"{icon} **{row['priority']}** \u2014 {row['category']}: {row['detail']}")
+            else:
+                st.info(f"{icon} **{row['priority']}** \u2014 {row['category']}: {row['detail']}")
 
 
 def _parse_handoff_summary(summary: str) -> tuple[str, dict[str, str]]:
@@ -164,10 +291,7 @@ col2.metric("Triage Score", triage.score)
 col3.metric("Abnormal Lab Signals", len(context.abnormal_labs))
 
 data_gaps = _check_data_completeness(context)
-if data_gaps:
-    with st.expander(f"Data completeness: {len(data_gaps)} gap(s) detected", expanded=False):
-        for gap in data_gaps:
-            st.warning(gap)
+_render_data_quality(data_gaps)
 
 overview_left, overview_right = st.columns([1.1, 1.2])
 
