@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from healthcare_ai.data import available_hadm_ids, load_dataset
 from healthcare_ai.features import CaseContext, build_case_context
+from healthcare_ai.note_nlp import extract_entities, summarize_note, summarize_note_llm
 from healthcare_ai.rag import answer_grounded_question, build_case_rag_index, llm_rag_available
 from healthcare_ai.retrieval import build_retrieval_index, find_similar_cases
 from healthcare_ai.summarizer import build_case_summary
@@ -272,6 +273,34 @@ def get_retrieval_index():
     return build_retrieval_index(get_bundle())
 
 
+@st.cache_data(show_spinner="Building case queue — triaging all admissions...")
+def build_case_queue(_bundle) -> pd.DataFrame:
+    all_ids = available_hadm_ids(_bundle)
+    rows: list[dict[str, object]] = []
+    for hadm_id in all_ids:
+        ctx = build_case_context(_bundle, hadm_id)
+        tri = score_case(ctx)
+        case = ctx.case_row
+        rows.append({
+            "hadm_id": int(hadm_id),
+            "case_id": case.get("case_id"),
+            "age": case.get("age"),
+            "gender": case.get("gender"),
+            "admission_diagnosis": case.get("admission_diagnosis"),
+            "urgency": tri.urgency,
+            "triage_score": tri.score,
+            "abnormal_labs": len(ctx.abnormal_labs),
+            "diagnosis_count": len(ctx.diagnoses),
+            "medication_count": len(ctx.prescriptions.drop_duplicates(subset=["drug"])) if not ctx.prescriptions.empty else 0,
+            "top_evidence": tri.evidence[0] if tri.evidence else "",
+        })
+    df = pd.DataFrame(rows)
+    urgency_rank = {"Critical": 0, "High": 1, "Moderate": 2, "Low": 3}
+    df["_urgency_rank"] = df["urgency"].map(urgency_rank)
+    df = df.sort_values(["_urgency_rank", "triage_score"], ascending=[True, False]).drop(columns=["_urgency_rank"])
+    return df.reset_index(drop=True)
+
+
 bundle = get_bundle()
 retrieval_index = get_retrieval_index()
 hadm_ids = available_hadm_ids(bundle)
@@ -282,6 +311,8 @@ st.caption(
 )
 
 with st.sidebar:
+    st.markdown("### View")
+    app_mode = st.radio("Mode", options=["Case Review", "Case Queue"], index=0)
     st.markdown("### RAG Mode")
     rag_mode = st.radio(
         "Grounded answer mode",
@@ -294,112 +325,197 @@ with st.sidebar:
         else:
             st.warning("OPENAI_API_KEY not set. The app will fall back to local grounded answers.")
 
-selected_hadm_id = st.sidebar.selectbox("Admission", hadm_ids, index=0)
-context = build_case_context(bundle, int(selected_hadm_id))
-triage = score_case(context)
-summary = build_case_summary(context, triage)
-similar_cases = find_similar_cases(retrieval_index, int(selected_hadm_id), top_n=5)
-rag_index = build_case_rag_index(context, similar_cases)
-case = context.case_row
+if app_mode == "Case Queue":
+    st.subheader("Case Queue — Review by Priority")
+    st.caption("All 2,000 admissions triaged and ranked. Filter by urgency, sort by score, then select a case to review.")
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Urgency", triage.urgency)
-col2.metric("Triage Score", triage.score)
-col3.metric("Abnormal Lab Signals", len(context.abnormal_labs))
+    queue_df = build_case_queue(bundle)
 
-data_gaps = _check_data_completeness(context)
-_render_data_quality(data_gaps)
+    filter_col, stats_col = st.columns([1, 1])
+    with filter_col:
+        urgency_filter = st.multiselect(
+            "Filter by urgency",
+            options=["Critical", "High", "Moderate", "Low"],
+            default=["Critical", "High", "Moderate", "Low"],
+        )
+    with stats_col:
+        counts = queue_df["urgency"].value_counts()
+        st.markdown(
+            f"**Critical:** {counts.get('Critical', 0)} · "
+            f"**High:** {counts.get('High', 0)} · "
+            f"**Moderate:** {counts.get('Moderate', 0)} · "
+            f"**Low:** {counts.get('Low', 0)}"
+        )
 
-overview_left, overview_right = st.columns([1.1, 1.2])
+    filtered = queue_df[queue_df["urgency"].isin(urgency_filter)].copy()
+    filtered.index = range(1, len(filtered) + 1)
+    filtered.index.name = "#"
 
-with overview_left:
-    st.subheader("Case Overview")
-    overview = pd.DataFrame(
-        [
-            {"field": "case_id", "value": str(case.get("case_id", ""))},
-            {"field": "subject_id", "value": str(case.get("subject_id", ""))},
-            {"field": "hadm_id", "value": str(case.get("hadm_id", ""))},
-            {"field": "age", "value": str(case.get("age", ""))},
-            {"field": "gender", "value": str(case.get("gender", ""))},
-            {"field": "admission_diagnosis", "value": str(case.get("admission_diagnosis", ""))},
-        ]
+    st.dataframe(
+        filtered,
+        width="stretch",
+        height=600,
+        column_config={
+            "hadm_id": st.column_config.NumberColumn("Admission ID", format="%d"),
+            "triage_score": st.column_config.NumberColumn("Score"),
+            "abnormal_labs": st.column_config.NumberColumn("Abnormal Labs"),
+            "diagnosis_count": st.column_config.NumberColumn("Diagnoses"),
+            "medication_count": st.column_config.NumberColumn("Medications"),
+        },
     )
-    st.dataframe(overview, width="stretch", hide_index=True)
 
-    st.subheader("Clinician Handoff")
-    _render_handoff(summary)
+    st.info("To review a specific case, copy the Admission ID and select it from the dropdown in **Case Review** mode.")
 
-with overview_right:
-    st.subheader("Evidence Trail")
-    st.caption("These are the interpretable signals that drove the current urgency band.")
-    for item in triage.evidence:
-        st.write(f"- {item}")
+else:
+    selected_hadm_id = st.sidebar.selectbox("Admission", hadm_ids, index=0)
+    context = build_case_context(bundle, int(selected_hadm_id))
+    triage = score_case(context)
+    summary = build_case_summary(context, triage)
+    similar_cases = find_similar_cases(retrieval_index, int(selected_hadm_id), top_n=5)
+    rag_index = build_case_rag_index(context, similar_cases)
+    case = context.case_row
 
-    st.subheader("Abnormal Labs")
-    if context.abnormal_labs.empty:
-        st.info("No strong abnormal lab deviations detected from dataset-level reference patterns.")
-    else:
-        lab_columns = [
-            "charttime",
-            "lab_name",
-            "numeric_value",
-            "unit",
-            "direction",
-            "iqr_distance",
-            "category",
-        ]
-        st.dataframe(
-            context.abnormal_labs[lab_columns].head(20),
-            width="stretch",
-            hide_index=True,
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Urgency", triage.urgency)
+    col2.metric("Triage Score", triage.score)
+    col3.metric("Abnormal Lab Signals", len(context.abnormal_labs))
+
+    data_gaps = _check_data_completeness(context)
+    _render_data_quality(data_gaps)
+
+    overview_left, overview_right = st.columns([1.1, 1.2])
+
+    with overview_left:
+        st.subheader("Case Overview")
+        overview = pd.DataFrame(
+            [
+                {"field": "case_id", "value": str(case.get("case_id", ""))},
+                {"field": "subject_id", "value": str(case.get("subject_id", ""))},
+                {"field": "hadm_id", "value": str(case.get("hadm_id", ""))},
+                {"field": "age", "value": str(case.get("age", ""))},
+                {"field": "gender", "value": str(case.get("gender", ""))},
+                {"field": "admission_diagnosis", "value": str(case.get("admission_diagnosis", ""))},
+            ]
         )
+        st.dataframe(overview, width="stretch", hide_index=True)
 
-st.subheader("Structured Data")
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["Diagnoses", "Medications", "All Labs", "Discharge Summary", "Similar Admissions", "Grounded Q&A"]
-)
+        st.subheader("Clinician Handoff")
+        _render_handoff(summary)
 
-with tab1:
-    st.dataframe(context.diagnoses, width="stretch", hide_index=True)
+    with overview_right:
+        st.subheader("Evidence Trail")
+        st.caption("These are the interpretable signals that drove the current urgency band.")
+        for item in triage.evidence:
+            st.write(f"- {item}")
 
-with tab2:
-    st.dataframe(context.prescriptions, width="stretch", hide_index=True)
-
-with tab3:
-    st.dataframe(context.labs, width="stretch", hide_index=True)
-
-with tab4:
-    st.text(str(case.get("discharge_summary", "")))
-
-with tab5:
-    st.caption("Nearest-neighbor retrieval over diagnoses, medications, labs, admission diagnosis, and note text.")
-    _similar_case_cards(bundle, similar_cases)
-
-with tab6:
-    st.caption("Ask a case-specific question. Answers are grounded only in retrieved note, lab, diagnosis, medication, and similar-case evidence.")
-    default_question = "Why is this case urgent?"
-    question = st.text_input("Question", value=default_question, key="rag_question")
-    if question.strip():
-        rag_result = answer_grounded_question(
-            rag_index,
-            question,
-            use_llm=(rag_mode == "LLM grounded"),
-        )
-        st.markdown("#### Grounded Answer")
-        st.text(rag_result["answer"])
-        if rag_result.get("mode") == "llm-grounded":
-            st.caption(f"Answer mode: LLM grounded via {rag_result.get('model', 'configured model')}")
-        elif rag_result.get("mode") == "local-grounded":
-            st.caption("Answer mode: local grounded retrieval summary")
-        elif rag_result.get("mode") == "fallback-local":
-            st.caption("Answer mode: local grounded fallback")
-        st.markdown("#### Retrieved Evidence")
-        if not rag_result["evidence"]:
-            st.info("No evidence retrieved for this question.")
+        st.subheader("Abnormal Labs")
+        if context.abnormal_labs.empty:
+            st.info("No strong abnormal lab deviations detected from dataset-level reference patterns.")
         else:
-            for item in rag_result["evidence"]:
-                with st.container(border=True):
-                    st.markdown(
-                        f"**{item['title']}**  \nSource: {item['source_type']} ({item['source_id']})  \nScore: {item['score']}"
-                    )
-                    st.write(item["content"])
+            lab_columns = [
+                "charttime",
+                "lab_name",
+                "numeric_value",
+                "unit",
+                "direction",
+                "iqr_distance",
+                "category",
+            ]
+            st.dataframe(
+                context.abnormal_labs[lab_columns].head(20),
+                width="stretch",
+                hide_index=True,
+            )
+
+    st.subheader("Structured Data")
+    tab1, tab2, tab3, tab4, tab4b, tab5, tab6 = st.tabs(
+        ["Diagnoses", "Medications", "All Labs", "Note Summary", "Extracted Entities", "Similar Admissions", "Grounded Q&A"]
+    )
+
+    with tab1:
+        st.dataframe(context.diagnoses, width="stretch", hide_index=True)
+
+    with tab2:
+        st.dataframe(context.prescriptions, width="stretch", hide_index=True)
+
+    with tab3:
+        st.dataframe(context.labs, width="stretch", hide_index=True)
+
+    with tab4:
+        raw_note = str(case.get("discharge_summary", ""))
+        note_summary = summarize_note(raw_note)
+
+        if note_summary.condensed and note_summary.condensed != "No discharge summary available.":
+            st.markdown("#### Condensed Summary")
+            st.caption(f"{note_summary.section_count} sections detected in the discharge note.")
+            st.markdown(note_summary.condensed)
+
+            if rag_mode == "LLM grounded":
+                with st.expander("LLM-generated summary"):
+                    llm_summary = summarize_note_llm(raw_note)
+                    if llm_summary:
+                        st.markdown(llm_summary)
+                    else:
+                        st.info("LLM summarization unavailable (no API key or connection error).")
+
+            with st.expander("All detected sections"):
+                for header, body in note_summary.sections.items():
+                    st.markdown(f"**{header.title()}**")
+                    st.write(body[:600] + ("..." if len(body) > 600 else ""))
+
+            with st.expander("Full discharge note"):
+                st.text(raw_note)
+        else:
+            st.info("No discharge summary available for this case.")
+
+    with tab4b:
+        entities = extract_entities(str(case.get("discharge_summary", "")))
+        entity_df = entities.to_dataframe()
+        if entity_df.empty:
+            st.info("No clinical entities extracted from the discharge note.")
+        else:
+            cat_counts = entity_df["category"].value_counts()
+            st.caption(
+                f"Extracted {len(entity_df)} entities: "
+                + ", ".join(f"{count} {cat.lower()}" for cat, count in cat_counts.items())
+                + "."
+            )
+            for cat in ["Condition", "Procedure", "Medication", "Vital / Measurement"]:
+                cat_df = entity_df[entity_df["category"] == cat]
+                if cat_df.empty:
+                    continue
+                st.markdown(f"#### {cat}s ({len(cat_df)})")
+                st.dataframe(cat_df[["entity"]].reset_index(drop=True), width="stretch", hide_index=True)
+
+    with tab5:
+        st.caption("Nearest-neighbor retrieval over diagnoses, medications, labs, admission diagnosis, and note text.")
+        _similar_case_cards(bundle, similar_cases)
+
+    with tab6:
+        st.caption("Ask a case-specific question. Answers are grounded only in retrieved note, lab, diagnosis, medication, and similar-case evidence.")
+        default_question = "Why is this case urgent?"
+        question = st.text_input("Question", value=default_question, key="rag_question")
+        if question.strip():
+            rag_result = answer_grounded_question(
+                rag_index,
+                question,
+                use_llm=(rag_mode == "LLM grounded"),
+            )
+            st.markdown("#### Grounded Answer")
+            st.text(rag_result["answer"])
+            if rag_result.get("mode") == "llm-grounded":
+                st.caption(f"Answer mode: LLM grounded via {rag_result.get('model', 'configured model')}")
+            elif rag_result.get("mode") == "local-grounded":
+                st.caption("Answer mode: local grounded retrieval summary")
+            elif rag_result.get("mode") == "fallback-local":
+                st.caption("Answer mode: local grounded fallback")
+            st.markdown("#### Retrieved Evidence")
+            if not rag_result["evidence"]:
+                st.info("No evidence retrieved for this question.")
+            else:
+                for item in rag_result["evidence"]:
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**{item['title']}**  \nSource: {item['source_type']} ({item['source_id']})  \nScore: {item['score']}"
+                        )
+                        st.write(item["content"])
