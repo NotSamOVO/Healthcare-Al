@@ -75,46 +75,58 @@ def _check_data_completeness(context: CaseContext) -> list[dict[str, str]]:
     # Labs with missing numeric values
     if not context.labs.empty:
         total_labs = len(context.labs)
-        unparsed = int(context.labs["numeric_value"].isna().sum())
+        text_only = context.labs[context.labs["numeric_value"].isna()]
+        unparsed = len(text_only)
         if unparsed > 0:
             pct = round(100 * unparsed / total_labs)
             severity = "Moderate" if pct < 50 else "High"
+            names = sorted(text_only["lab_name"].dropna().unique())[:6]
+            names_str = ", ".join(names) + (" ..." if len(text_only["lab_name"].dropna().unique()) > 6 else "")
             issues.append({
                 "priority": severity,
                 "category": "Inconsistency",
-                "detail": f"{unparsed} of {total_labs} lab results ({pct}%) are text-only (e.g. 'GREATER THAN 150') and cannot be checked for abnormality.",
+                "detail": f"{unparsed} of {total_labs} lab results ({pct}%) are text-only and cannot be checked for abnormality: {names_str}",
             })
 
     # Labs with missing timestamps
     if not context.labs.empty:
-        missing_time = int(context.labs["charttime"].isna().sum())
+        no_time = context.labs[context.labs["charttime"].isna()]
+        missing_time = len(no_time)
         if missing_time > 0:
+            names = sorted(no_time["lab_name"].dropna().unique())[:6]
+            names_str = ", ".join(names) + (" ..." if len(no_time["lab_name"].dropna().unique()) > 6 else "")
             issues.append({
                 "priority": "Moderate",
                 "category": "Inconsistency",
-                "detail": f"{missing_time} lab result(s) are missing a recorded date/time.",
+                "detail": f"{missing_time} lab result(s) are missing a recorded date/time: {names_str}",
             })
 
     # Diagnoses missing descriptions
     if not context.diagnoses.empty:
-        missing_titles = int(
-            context.diagnoses["long_title"].fillna(context.diagnoses["short_title"]).isna().sum()
-        )
+        no_title = context.diagnoses[
+            context.diagnoses["long_title"].fillna(context.diagnoses["short_title"]).isna()
+        ]
+        missing_titles = len(no_title)
         if missing_titles > 0:
+            codes = no_title["icd9_code"].dropna().head(6).tolist()
+            codes_str = ", ".join(str(c) for c in codes) + (" ..." if missing_titles > 6 else "")
             issues.append({
                 "priority": "Low",
                 "category": "Inconsistency",
-                "detail": f"{missing_titles} diagnosis code(s) have no readable name. These ICD9 codes were not found in the dictionary.",
+                "detail": f"{missing_titles} diagnosis code(s) have no readable name: {codes_str}",
             })
 
     # Prescriptions missing dose info
     if not context.prescriptions.empty:
-        missing_dose = int(context.prescriptions["dose_value"].isna().sum())
+        no_dose = context.prescriptions[context.prescriptions["dose_value"].isna()]
+        missing_dose = len(no_dose)
         if missing_dose > 0:
+            drugs = sorted(no_dose["drug"].dropna().unique())[:6]
+            drugs_str = ", ".join(drugs) + (" ..." if len(no_dose["drug"].dropna().unique()) > 6 else "")
             issues.append({
                 "priority": "Low",
                 "category": "Inconsistency",
-                "detail": f"{missing_dose} prescription(s) are missing dosage information.",
+                "detail": f"{missing_dose} prescription(s) are missing dosage information: {drugs_str}",
             })
 
     # Age sanity check
