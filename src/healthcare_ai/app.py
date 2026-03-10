@@ -310,11 +310,13 @@ st.caption(
     "Interpretable admission triage over discharge summaries, diagnoses, prescriptions, and labs."
 )
 
+# Handle queue→review navigation *before* the radio widget is created
+if st.session_state.get("_queue_pick"):
+    st.session_state["app_mode"] = "Case Review"
+
 with st.sidebar:
     st.markdown("### View")
-    if "app_mode" not in st.session_state:
-        st.session_state["app_mode"] = "Case Review"
-    app_mode = st.radio("Mode", options=["Case Review", "Case Queue"], index=["Case Review", "Case Queue"].index(st.session_state["app_mode"]), key="app_mode")
+    app_mode = st.radio("Mode", options=["Case Review", "Case Queue"], key="app_mode")
     st.markdown("### RAG Mode")
     rag_mode = st.radio(
         "Grounded answer mode",
@@ -371,13 +373,12 @@ if app_mode == "Case Queue":
     selected_rows = selection.selection.rows if selection else []
     if selected_rows:
         picked_hadm = int(filtered.iloc[selected_rows[0]]["hadm_id"])
-        st.session_state["selected_hadm_id"] = picked_hadm
-        st.session_state["app_mode"] = "Case Review"
+        st.session_state["_queue_pick"] = picked_hadm
         st.rerun()
 
 else:
     # If navigated from the queue, pre-select that admission
-    preselected = st.session_state.pop("selected_hadm_id", None)
+    preselected = st.session_state.pop("_queue_pick", None)
     if preselected and preselected in hadm_ids:
         default_idx = list(hadm_ids).index(preselected)
     else:
