@@ -312,7 +312,9 @@ st.caption(
 
 with st.sidebar:
     st.markdown("### View")
-    app_mode = st.radio("Mode", options=["Case Review", "Case Queue"], index=0)
+    if "app_mode" not in st.session_state:
+        st.session_state["app_mode"] = "Case Review"
+    app_mode = st.radio("Mode", options=["Case Review", "Case Queue"], index=["Case Review", "Case Queue"].index(st.session_state["app_mode"]), key="app_mode")
     st.markdown("### RAG Mode")
     rag_mode = st.radio(
         "Grounded answer mode",
@@ -327,7 +329,7 @@ with st.sidebar:
 
 if app_mode == "Case Queue":
     st.subheader("Case Queue — Review by Priority")
-    st.caption("All 2,000 admissions triaged and ranked. Filter by urgency, sort by score, then select a case to review.")
+    st.caption("All 2,000 admissions triaged and ranked. Filter by urgency, then click a row to open that case.")
 
     queue_df = build_case_queue(bundle)
 
@@ -351,7 +353,7 @@ if app_mode == "Case Queue":
     filtered.index = range(1, len(filtered) + 1)
     filtered.index.name = "#"
 
-    st.dataframe(
+    selection = st.dataframe(
         filtered,
         width="stretch",
         height=600,
@@ -362,12 +364,25 @@ if app_mode == "Case Queue":
             "diagnosis_count": st.column_config.NumberColumn("Diagnoses"),
             "medication_count": st.column_config.NumberColumn("Medications"),
         },
+        on_select="rerun",
+        selection_mode="single-row",
     )
 
-    st.info("To review a specific case, copy the Admission ID and select it from the dropdown in **Case Review** mode.")
+    selected_rows = selection.selection.rows if selection else []
+    if selected_rows:
+        picked_hadm = int(filtered.iloc[selected_rows[0]]["hadm_id"])
+        st.session_state["selected_hadm_id"] = picked_hadm
+        st.session_state["app_mode"] = "Case Review"
+        st.rerun()
 
 else:
-    selected_hadm_id = st.sidebar.selectbox("Admission", hadm_ids, index=0)
+    # If navigated from the queue, pre-select that admission
+    preselected = st.session_state.pop("selected_hadm_id", None)
+    if preselected and preselected in hadm_ids:
+        default_idx = list(hadm_ids).index(preselected)
+    else:
+        default_idx = 0
+    selected_hadm_id = st.sidebar.selectbox("Admission", hadm_ids, index=default_idx)
     context = build_case_context(bundle, int(selected_hadm_id))
     triage = score_case(context)
     summary = build_case_summary(context, triage)
