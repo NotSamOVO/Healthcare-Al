@@ -161,15 +161,19 @@ def _render_data_quality(issues: list[dict[str, str]]) -> None:
         label_parts.append(f"{low} low")
     label = f"Data quality: {', '.join(label_parts)} issue(s) flagged"
     with st.expander(label, expanded=high > 0):
-        df = pd.DataFrame(issues, columns=["priority", "category", "detail"])
-        for _, row in df.iterrows():
+        summary_df = pd.DataFrame(issues, columns=["priority", "category", "detail"])
+        summary_df.index = range(1, len(summary_df) + 1)
+        summary_df.index.name = "#"
+        st.dataframe(summary_df, width="stretch")
+        st.divider()
+        for _, row in summary_df.iterrows():
             icon = {"High": "\u2757", "Moderate": "\u26a0\ufe0f", "Low": "\u2139\ufe0f"}.get(row["priority"], "")
             if row["priority"] == "High":
-                st.error(f"{icon} **{row['priority']}** \u2014 {row['category']}: {row['detail']}")
+                st.error(f"{icon} **{row['priority']}** — {row['category']}: {row['detail']}")
             elif row["priority"] == "Moderate":
-                st.warning(f"{icon} **{row['priority']}** \u2014 {row['category']}: {row['detail']}")
+                st.warning(f"{icon} **{row['priority']}** — {row['category']}: {row['detail']}")
             else:
-                st.info(f"{icon} **{row['priority']}** \u2014 {row['category']}: {row['detail']}")
+                st.info(f"{icon} **{row['priority']}** — {row['category']}: {row['detail']}")
 
 
 def _parse_handoff_summary(summary: str) -> tuple[str, dict[str, str]]:
