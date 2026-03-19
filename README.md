@@ -130,9 +130,4 @@ src/healthcare_ai/
   triage.py
 ```
 
-## Suggested next steps for the hackathon
 
-1. Add note-section extraction tuned to the dataset's discharge summary format.
-2. Replace rule weights with clinician-reviewed heuristics or weak supervision.
-3. Add evaluation on a hand-labeled validation set for urgency and summary usefulness.
-4. Add a clinician feedback loop to rate summary quality and triage usefulness.
